@@ -16,7 +16,7 @@ benchmarks.
 | **8** | Mask-based anomaly baselines with **EoMT** (MSP / MaxLogit / MaxEntropy / **RbA**) + temperature scaling, across all checkpoints. | `eomt.py` |
 | — | Shared post-hoc anomaly score functions. | `scores.py` |
 
-**Metrics** (Steps 7 & 8): AuPRC (↑) and FPR95 (↓), on SMIYC RA-21, SMIYC RO-21,
+**Metrics**: AuPRC (↑) and FPR95 (↓), on SMIYC RA-21, SMIYC RO-21,
 Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 
 ## Repository structure
@@ -56,18 +56,18 @@ at their locations via the CLI flags:
 
 ## Running
 
-**Eval — checkpoint mIoU comparison:** `python step4.py` (expects the Cityscapes zips and the two `.bin` at the paths set in the script).
+**Eval — checkpoint mIoU comparison:** `python eval.py` (expects the Cityscapes zips and the two `.bin` at the paths set in the script).
 
-**Fine-tune — fine-tuning:** see `step5.py` for its arguments.
+**Fine-tune — fine-tuning:** see `finetune.py` for its arguments.
 
-**ERFNET — pixel-based anomaly (ERFNet):** `python step7.py --input '<dir>/images/*.jpg' --loadDir <models>/ --method msp` (see script args).
+**ERFNET — pixel-based anomaly (ERFNet):** `python erfnet.py --input '<dir>/images/*.jpg' --loadDir <models>/ --method msp` (see script args).
 
 **EoMT — mask-based anomaly (example):**
 ```bash
-python step8.py \
+python emot.py \
   --kind cityscapes \                 # cityscapes | coco | ft_head | ft_last_block
-  --ckpt    <path>/eomt_cityscapes.bin \
-  --eomt-root <path>/eomt \
+  --ckpt    <path>/eomt_<kind>.bin \
+  --eomt-root <path>/MaskArchitectureAnomaly_CourseProject/eomt \
   --data-root <path>/Validation_Dataset \
   --datasets RoadAnomaly RoadAnomaly21 RoadObsticle21 fs_static FS_LostFound_full \
   --temps 0.25 0.5 0.75 1.0 1.5 2.0 2.5 \
