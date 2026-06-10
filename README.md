@@ -35,9 +35,6 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 └── README.md
 ```
 
-> The `eomt/` model code is the course-provided EoMT fork. It is large; prefer using it
-> as a git submodule or cloning it separately rather than committing it wholesale.
-
 ## Setup
 
 ```bash
@@ -82,8 +79,7 @@ files are skipped).
 
 ## Results & report
 
-- Numeric results: `results/*.json` (parse with the small loaders in the notebooks /
-  `report/generate_assets.py`).
+- Numeric results: `results/*`.
 - Final report: `report/main.pdf`.
 
 ## Team
