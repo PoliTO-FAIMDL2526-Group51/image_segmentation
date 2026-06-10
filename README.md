@@ -24,14 +24,14 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 ```
 .
 ├── src/
-│   ├── eval.py
-│   ├── finetune.py
-│   ├── erfnet.py
-│   ├── eomt.py
-│   └── scores.py
-├── requirements.txt
-├── results/
-├── report/
+│   ├── eval.py             # compare two EoMT checkpoints on Cityscapes val
+│   ├── finetune.py         # fine-tune the COCO EoMT toward Cityscapes
+│   ├── erfnet.py           # ERFNet pixel-based anomaly baselines
+│   ├── eomt.py             # EoMT mask-based anomaly
+│   └── scores.py           # shared anomaly score functions
+├── requirements.txt        # Python dependencies
+├── results/                # Per-(checkpoint, dataset, T) metric JSONs + figures
+├── report/                 # LaTeX report (main.tex → main.pdf)
 └── README.md
 ```
 
