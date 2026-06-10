@@ -26,7 +26,6 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 ├── eval.py / finetune.py / erfnet.py / eomt.py   # one script per project step
 ├── scores.py                                   # shared anomaly score functions
 ├── requirements.txt
-├── eomt/                                        # EoMT model code (course fork; see note)
 ├── results/                                     # per-(checkpoint,dataset,T) JSON metrics + figures
 ├── report/                                      # LaTeX report (main.tex -> main.pdf, fig/, ...)
 └── README.md
@@ -38,10 +37,11 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 ## Setup
 
 ```bash
+git clone https://github.com/AlessandroMarinai/MaskArchitectureAnomaly_CourseProject.git
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The EoMT model has its own deps; if anything is missing at runtime:
-# pip install -r eomt/requirements.txt
+# pip install -r MaskArchitectureAnomaly_CourseProject/eomt/requirements.txt
 ```
 
 ## Data & checkpoints (not in the repo)
