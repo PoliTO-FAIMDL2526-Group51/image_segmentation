@@ -10,11 +10,11 @@ benchmarks.
 
 | Step | What it does | File |
 |------|--------------|------|
-| **4** | Compare the two pretrained EoMT checkpoints (Cityscapes vs COCO) on the Cityscapes val set in a common label space; report mIoU + per-class IoU. | `step4.py` |
-| **5** | Fine-tune the COCO-trained EoMT toward Cityscapes (head-only and last-block variants). | `step5.py` |
-| **7** | Pixel-based anomaly baselines with **ERFNet** (MSP / MaxLogit / MaxEntropy). | `step7.py` |
+| **4** | Compare the two pretrained EoMT checkpoints (Cityscapes vs COCO) on the Cityscapes val set in a common label space; report mIoU + per-class IoU. | `eval.py` |
+| **5** | Fine-tune the COCO-trained EoMT toward Cityscapes (head-only and last-block variants). | `finetune.py` |
+| **7** | Pixel-based anomaly baselines with **ERFNet** (MSP / MaxLogit / MaxEntropy). | `erfnet.py` |
 | **8** | Mask-based anomaly baselines with **EoMT** (MSP / MaxLogit / MaxEntropy / **RbA**) + temperature scaling, across all checkpoints. | `step8.py` |
-| — | Shared post-hoc anomaly score functions (used by Steps 7 & 8). | `scores.py` |
+| — | Shared post-hoc anomaly score functions (used by Steps 7 & 8). | `eomt.py` |
 
 **Metrics** (Steps 7 & 8): AuPRC (↑) and FPR95 (↓), on SMIYC RA-21, SMIYC RO-21,
 Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
