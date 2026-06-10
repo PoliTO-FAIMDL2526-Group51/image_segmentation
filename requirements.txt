@@ -1,0 +1,20 @@
+# Anomaly-segmentation project — Python dependencies
+#
+# Install (CPU/GPU torch differs by platform — see note below):
+#   pip install -r requirements.txt
+#
+# The EoMT model itself comes from the course fork (cloned/submodule), which has
+# its own requirements.txt; if a model dependency is missing at runtime, also run:
+#   pip install -r <path-to-eomt-fork>/requirements.txt
+# For an exact, reproducible lock of your working env: pip freeze > requirements.txt
+torch>=2.1
+torchvision
+numpy
+pillow
+pyyaml
+scikit-learn
+matplotlib
+lightning
+timm
+einops
+huggingface_hub
