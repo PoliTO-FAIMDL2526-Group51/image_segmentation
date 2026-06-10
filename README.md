@@ -50,10 +50,9 @@ pip install -r requirements.txt
 Datasets and model weights are **git-ignored** (large). Obtain them and point the scripts
 at their locations via the CLI flags:
 
-- **EoMT checkpoints** (`eomt_cityscapes.bin`, `eomt_coco.bin`, and the Step 5 fine-tuned
-  `.bin` files) — professor-provided.
-- **Cityscapes val** (`leftImg8bit_trainvaltest.zip`, `gtFine_trainvaltest.zip`) — Step 4.
-- **Anomaly validation datasets** (`Validation_Dataset/` with the 5 benchmarks above) — Steps 7 & 8.
+- **EoMT checkpoints** (`eomt_cityscapes.bin`, `eomt_coco.bin`, and the fine-tuned `.bin` files).
+- **Cityscapes val** (`leftImg8bit_trainvaltest.zip`, `gtFine_trainvaltest.zip`).
+- **Anomaly validation datasets** (`Validation_Dataset/` with the 5 datasets above).
 
 ## Running
 
