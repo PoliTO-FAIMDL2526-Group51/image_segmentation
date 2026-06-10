@@ -23,11 +23,15 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 
 ```
 .
-├── eval.py / finetune.py / erfnet.py / eomt.py   # one script per project step
-├── scores.py                                   # shared anomaly score functions
+├── src/
+│   ├── eval.py
+│   ├── finetune.py
+│   ├── erfnet.py
+│   ├── eomt.py
+│   └── scores.py
 ├── requirements.txt
-├── results/                                     # per-(checkpoint,dataset,T) JSON metrics + figures
-├── report/                                      # LaTeX report (main.tex -> main.pdf, fig/, ...)
+├── results/
+├── report/
 └── README.md
 ```
 
