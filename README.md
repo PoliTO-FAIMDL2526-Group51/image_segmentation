@@ -41,11 +41,8 @@ Fishyscapes Lost&Found, Fishyscapes Static, and Road Anomaly.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The EoMT model has its own deps; if anything is missing at runtime:
-#   pip install -r eomt/requirements.txt
+# pip install -r eomt/requirements.txt
 ```
-
-`torch` is intentionally unpinned for CUDA/CPU portability — install the wheel matching
-your platform/GPU. See `requirements.txt` for details.
 
 ## Data & checkpoints (not in the repo)
 
@@ -73,7 +70,7 @@ python step8.py \
   --eomt-root <path>/eomt \
   --data-root <path>/Validation_Dataset \
   --datasets RoadAnomaly RoadAnomaly21 RoadObsticle21 fs_static FS_LostFound_full \
-  --temps 0.5 1.0 1.5 2.0 2.5 \
+  --temps 0.25 0.5 0.75 1.0 1.5 2.0 2.5 \
   --out results
 ```
 Writes one JSON per `(checkpoint, dataset, temperature)` to `--out` (resumable: existing
