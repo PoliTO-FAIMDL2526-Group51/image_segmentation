@@ -1,0 +1,1306 @@
+#!/usr/bin/env python3
+"""Step 5: fine-tune COCO EoMT on Cityscapes and report mIoU.
+
+Run a quick correctness test from the project root:
+
+    python step5.py --mode smoke
+
+Run the full last-block experiment:
+
+    python step5.py --mode all --experiment last-block
+
+Expected project layout:
+
+    MaskArchitectureAnomaly_CourseProject/
+      step5.py
+      eomt/
+      eomt_coco.bin
+      eomt_cityscapes.bin
+      leftImg8bit_trainvaltest.zip
+      gtFine_trainvaltest.zip
+
+The script does three things:
+  1. Smoke-tests the training and evaluation code, or
+  2. Evaluates the two provided checkpoints, or
+  3. Fine-tunes the COCO checkpoint and evaluates the fine-tuned checkpoint.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parent
+EOMT_ROOT = ROOT / "eomt"
+
+COCO_CHECKPOINT = ROOT / "eomt_coco.bin"
+CITYSCAPES_CHECKPOINT = ROOT / "eomt_cityscapes.bin"
+
+CITYSCAPES_ZIPS = [
+    "leftImg8bit_trainvaltest.zip",
+    "gtFine_trainvaltest.zip",
+]
+
+CITYSCAPES_CLASSES = [
+    "road",
+    "sidewalk",
+    "building",
+    "wall",
+    "fence",
+    "pole",
+    "traffic light",
+    "traffic sign",
+    "vegetation",
+    "terrain",
+    "sky",
+    "person",
+    "rider",
+    "car",
+    "truck",
+    "bus",
+    "train",
+    "motorcycle",
+    "bicycle",
+]
+
+CITYSCAPES_PALETTE = [
+    [128, 64, 128],
+    [244, 35, 232],
+    [70, 70, 70],
+    [102, 102, 156],
+    [190, 153, 153],
+    [153, 153, 153],
+    [250, 170, 30],
+    [220, 220, 0],
+    [107, 142, 35],
+    [152, 251, 152],
+    [70, 130, 180],
+    [220, 20, 60],
+    [255, 0, 0],
+    [0, 0, 142],
+    [0, 0, 70],
+    [0, 60, 100],
+    [0, 80, 100],
+    [0, 0, 230],
+    [119, 11, 32],
+    [0, 0, 0],
+]
+
+# COCO panoptic category id -> Cityscapes trainId.
+COCO_TO_CITYSCAPES = {
+    1: 11,
+    2: 18,
+    3: 13,
+    4: 17,
+    6: 15,
+    7: 16,
+    8: 14,
+    10: 6,
+    13: 7,
+    125: 9,
+    128: 2,
+    149: 0,
+    151: 2,
+    154: 9,
+    171: 3,
+    175: 3,
+    176: 3,
+    177: 3,
+    184: 8,
+    185: 4,
+    187: 10,
+    191: 1,
+    192: 9,
+    193: 9,
+    194: 9,
+    197: 2,
+    198: 9,
+    199: 3,
+}
+
+
+def get_trainable_patterns(experiment: str) -> list[str]:
+    patterns = [
+        "network.q.*",
+        "network.class_head.*",
+        "network.mask_head.*",
+        "network.upscale.*",
+    ]
+
+    if experiment == "last-block":
+        patterns += [
+            "network.encoder.backbone.blocks.11.*",
+            "network.encoder.backbone.norm.*",
+        ]
+
+    return patterns
+
+
+def get_default_epochs(experiment: str) -> int:
+    if experiment == "head":
+        return 8
+    return 12
+
+
+def get_learning_rate(experiment: str) -> float:
+    if experiment == "head":
+        return 1e-4
+    return 5e-5
+
+
+def get_checkpoint_name(experiment: str) -> str:
+    if experiment == "head":
+        return "finetuned_coco_head_640"
+    return "finetuned_coco_last_block_640"
+
+
+def selected_experiments(name: str) -> list[str]:
+    if name == "both":
+        return ["head", "last-block"]
+    return [name]
+
+
+def quote_yaml(value: str | Path) -> str:
+    return json.dumps(str(value))
+
+
+def run_command(command: list[str], cwd: Path, extra_pythonpath: Path | None = None) -> None:
+    print("\n$", " ".join(command), flush=True)
+    env = None
+    if extra_pythonpath is not None:
+        env = os.environ.copy()
+        old_pythonpath = env.get("PYTHONPATH", "")
+        paths = [str(extra_pythonpath)]
+        if old_pythonpath:
+            paths.append(old_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+    subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def check_input_files(args: argparse.Namespace) -> None:
+    if not args.eomt_root.exists():
+        raise FileNotFoundError(f"EoMT folder was not found: {args.eomt_root}")
+
+    if not (args.eomt_root / "main.py").exists():
+        raise FileNotFoundError(f"EoMT main.py was not found under: {args.eomt_root}")
+
+    for zip_name in CITYSCAPES_ZIPS:
+        zip_path = args.data_path / zip_name
+        if not zip_path.exists():
+            raise FileNotFoundError(f"Cityscapes zip file was not found: {zip_path}")
+
+    if args.mode in ["all", "baselines", "smoke"] and not args.cityscapes_checkpoint.exists():
+        raise FileNotFoundError(
+            f"Provided Cityscapes checkpoint was not found: {args.cityscapes_checkpoint}"
+        )
+
+    if args.mode in ["all", "finetune", "smoke"] and not args.coco_checkpoint.exists():
+        raise FileNotFoundError(f"Provided COCO checkpoint was not found: {args.coco_checkpoint}")
+
+
+def write_step5_training_module(output_dir: Path) -> Path:
+    runtime_dir = output_dir / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    module_path = runtime_dir / "step5_training.py"
+
+    module_code = '''"""Step 5-only training module.
+
+This file is generated by step5.py. It keeps the original EoMT training files
+unchanged while allowing selective head / last-block fine-tuning.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import logging
+from typing import List, Optional
+
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+
+from training.mask_classification_semantic import MaskClassificationSemantic
+from training.two_stage_warmup_poly_schedule import TwoStageWarmupPolySchedule
+
+
+class Step5MaskClassificationSemantic(MaskClassificationSemantic):
+    def __init__(
+        self,
+        network: nn.Module,
+        img_size: tuple[int, int],
+        num_classes: int,
+        attn_mask_annealing_enabled: bool,
+        attn_mask_annealing_start_steps: Optional[list[int]] = None,
+        attn_mask_annealing_end_steps: Optional[list[int]] = None,
+        ignore_idx: int = 255,
+        lr: float = 1e-4,
+        llrd: float = 0.8,
+        llrd_l2_enabled: bool = True,
+        lr_mult: float = 1.0,
+        weight_decay: float = 0.05,
+        num_points: int = 12544,
+        oversample_ratio: float = 3.0,
+        importance_sample_ratio: float = 0.75,
+        poly_power: float = 0.9,
+        warmup_steps: List[int] = [500, 1000],
+        no_object_coefficient: float = 0.1,
+        mask_coefficient: float = 5.0,
+        dice_coefficient: float = 5.0,
+        class_coefficient: float = 2.0,
+        mask_thresh: float = 0.8,
+        overlap_thresh: float = 0.8,
+        ckpt_path: Optional[str] = None,
+        delta_weights: bool = False,
+        load_ckpt_class_head: bool = True,
+        trainable_param_patterns: Optional[list[str]] = None,
+    ):
+        super().__init__(
+            network=network,
+            img_size=img_size,
+            num_classes=num_classes,
+            attn_mask_annealing_enabled=attn_mask_annealing_enabled,
+            attn_mask_annealing_start_steps=attn_mask_annealing_start_steps,
+            attn_mask_annealing_end_steps=attn_mask_annealing_end_steps,
+            ignore_idx=ignore_idx,
+            lr=lr,
+            llrd=llrd,
+            llrd_l2_enabled=llrd_l2_enabled,
+            lr_mult=lr_mult,
+            weight_decay=weight_decay,
+            num_points=num_points,
+            oversample_ratio=oversample_ratio,
+            importance_sample_ratio=importance_sample_ratio,
+            poly_power=poly_power,
+            warmup_steps=warmup_steps,
+            no_object_coefficient=no_object_coefficient,
+            mask_coefficient=mask_coefficient,
+            dice_coefficient=dice_coefficient,
+            class_coefficient=class_coefficient,
+            mask_thresh=mask_thresh,
+            overlap_thresh=overlap_thresh,
+            ckpt_path=ckpt_path,
+            delta_weights=delta_weights,
+            load_ckpt_class_head=load_ckpt_class_head,
+        )
+        self.trainable_param_patterns = trainable_param_patterns
+        self.apply_step5_trainable_filter()
+
+    def apply_step5_trainable_filter(self) -> None:
+        if not self.trainable_param_patterns:
+            return
+
+        trainable = 0
+        frozen = 0
+        for name, param in self.named_parameters():
+            keep_trainable = any(
+                fnmatch.fnmatch(name, pattern)
+                for pattern in self.trainable_param_patterns
+            )
+            param.requires_grad = keep_trainable
+            if keep_trainable:
+                trainable += param.numel()
+            else:
+                frozen += param.numel()
+
+        if trainable == 0:
+            raise ValueError("No trainable Step 5 parameters matched the requested patterns.")
+
+        logging.info(
+            "Step 5 trainable filter: "
+            f"{trainable:,} trainable / {frozen:,} frozen. "
+            f"Patterns: {self.trainable_param_patterns}"
+        )
+
+    def configure_optimizers(self):
+        encoder_param_names = {
+            n for n, _ in self.network.encoder.backbone.named_parameters()
+        }
+        backbone_param_groups = []
+        other_param_groups = []
+        backbone_blocks = len(self.network.encoder.backbone.blocks)
+        block_i = backbone_blocks
+
+        l2_blocks = torch.arange(
+            backbone_blocks - self.network.num_blocks, backbone_blocks
+        ).tolist()
+
+        for name, param in reversed(list(self.named_parameters())):
+            if not param.requires_grad:
+                continue
+
+            lr = self.lr
+
+            if name.replace("network.encoder.backbone.", "") in encoder_param_names:
+                name_list = name.split(".")
+
+                is_block = False
+                for i, key in enumerate(name_list):
+                    if key == "blocks":
+                        block_i = int(name_list[i + 1])
+                        is_block = True
+
+                if is_block or block_i == 0:
+                    lr *= self.llrd ** (backbone_blocks - 1 - block_i)
+
+                elif (is_block or block_i == 0) and self.lr_mult != 1.0:
+                    lr *= self.lr_mult
+
+                if "backbone.norm" in name:
+                    lr = self.lr
+
+                if (
+                    is_block
+                    and (block_i in l2_blocks)
+                    and ((not self.llrd_l2_enabled) or (self.lr_mult != 1.0))
+                ):
+                    lr = self.lr
+
+                backbone_param_groups.append(
+                    {"params": [param], "lr": lr, "name": name}
+                )
+            else:
+                other_param_groups.append(
+                    {"params": [param], "lr": self.lr, "name": name}
+                )
+
+        param_groups = backbone_param_groups + other_param_groups
+        if not param_groups:
+            raise ValueError("No trainable Step 5 parameters found for optimizer.")
+
+        optimizer = AdamW(param_groups, weight_decay=self.weight_decay)
+
+        scheduler = TwoStageWarmupPolySchedule(
+            optimizer,
+            num_backbone_params=len(backbone_param_groups),
+            warmup_steps=self.warmup_steps,
+            total_steps=self.trainer.estimated_stepping_batches,
+            poly_power=self.poly_power,
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
+'''
+
+    module_path.write_text(module_code, encoding="utf-8")
+    return runtime_dir
+
+
+def write_training_config(
+    config_path: Path,
+    experiment: str,
+    args: argparse.Namespace,
+    train_root: Path,
+    epochs: int,
+) -> None:
+    trainable_lines = []
+    for pattern in get_trainable_patterns(experiment):
+        trainable_lines.append(f"      - {quote_yaml(pattern)}")
+
+    config = f"""trainer:
+  max_epochs: {epochs}
+  default_root_dir: {quote_yaml(train_root)}
+  precision: {quote_yaml(args.precision)}
+  check_val_every_n_epoch: {epochs}
+  limit_val_batches: 0
+  num_sanity_val_steps: 0
+  log_every_n_steps: 25
+  logger:
+    class_path: lightning.pytorch.loggers.CSVLogger
+    init_args:
+      save_dir: {quote_yaml(train_root / "logs")}
+      name: {quote_yaml("step5_" + experiment.replace("-", "_"))}
+
+model:
+  class_path: step5_training.Step5MaskClassificationSemantic
+  init_args:
+    attn_mask_annealing_enabled: False
+    lr: {get_learning_rate(experiment)}
+    warmup_steps: [500, 1000]
+    ckpt_path: {quote_yaml(args.coco_checkpoint)}
+    load_ckpt_class_head: False
+    trainable_param_patterns:
+{chr(10).join(trainable_lines)}
+    network:
+      class_path: models.eomt.EoMT
+      init_args:
+        num_q: 200
+        num_blocks: 3
+        encoder:
+          class_path: models.vit.ViT
+          init_args:
+            backbone_name: vit_base_patch14_reg4_dinov2
+
+data:
+  class_path: datasets.cityscapes_semantic.CityscapesSemantic
+  init_args:
+    path: {quote_yaml(args.data_path)}
+    batch_size: {args.batch_size}
+    num_workers: {args.num_workers}
+    img_size: [{args.img_size}, {args.img_size}]
+"""
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(config, encoding="utf-8")
+    print(f"Wrote training config: {config_path}")
+
+
+def latest_checkpoint(train_root: Path) -> Path:
+    checkpoints = list(train_root.glob("**/*.ckpt"))
+    if not checkpoints:
+        raise FileNotFoundError(f"No Lightning checkpoints were found under: {train_root}")
+    return max(checkpoints, key=lambda path: path.stat().st_mtime)
+
+
+def train_one_experiment(experiment: str, args: argparse.Namespace) -> Path:
+    epochs = args.epochs if args.epochs > 0 else get_default_epochs(experiment)
+    train_name = experiment.replace("-", "_")
+    train_root = args.output_dir / "train" / train_name
+    config_path = args.output_dir / "configs" / f"step5_{train_name}.yaml"
+    runtime_dir = write_step5_training_module(args.output_dir)
+
+    print("\n" + "=" * 80)
+    print(f"Fine-tuning experiment: {experiment}")
+    print(f"Epochs: {epochs}")
+    print(f"Trainable patterns: {get_trainable_patterns(experiment)}")
+    print("=" * 80)
+
+    write_training_config(config_path, experiment, args, train_root, epochs)
+
+    run_command(
+        [
+            sys.executable,
+            "main.py",
+            "fit",
+            "-c",
+            str(config_path),
+            "--trainer.devices",
+            "1",
+            "--compile_disabled",
+        ],
+        cwd=args.eomt_root,
+        extra_pythonpath=runtime_dir,
+    )
+
+    checkpoint = latest_checkpoint(train_root)
+    checkpoint_dir = args.output_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_checkpoint = checkpoint_dir / f"{get_checkpoint_name(experiment)}.ckpt"
+    shutil.copy2(checkpoint, copied_checkpoint)
+    print(f"Saved fine-tuned checkpoint copy: {copied_checkpoint}")
+
+    return copied_checkpoint
+
+
+def run_smoke_mode(args: argparse.Namespace) -> None:
+    experiment = selected_experiments(args.experiment)[0]
+    train_name = experiment.replace("-", "_")
+    train_root = args.output_dir / "smoke_train" / train_name
+    config_path = args.output_dir / "configs" / f"smoke_{train_name}.yaml"
+    runtime_dir = write_step5_training_module(args.output_dir)
+
+    print("\n" + "=" * 80)
+    print("Smoke test")
+    print("This runs two training batches and evaluates two validation images.")
+    print("=" * 80)
+
+    write_training_config(
+        config_path=config_path,
+        experiment=experiment,
+        args=args,
+        train_root=train_root,
+        epochs=1,
+    )
+
+    run_command(
+        [
+            sys.executable,
+            "main.py",
+            "fit",
+            "-c",
+            str(config_path),
+            "--trainer.limit_train_batches",
+            "2",
+            "--trainer.limit_val_batches",
+            "0",
+            "--trainer.devices",
+            "1",
+            "--compile_disabled",
+        ],
+        cwd=args.eomt_root,
+        extra_pythonpath=runtime_dir,
+    )
+
+    original_limit = args.limit_eval_images
+    args.limit_eval_images = original_limit or 2
+
+    result = evaluate_checkpoint(
+        checkpoint=args.cityscapes_checkpoint,
+        checkpoint_name="smoke_provided_eomt_cityscapes_640",
+        model_preset="cityscapes-semantic",
+        args=args,
+    )
+    result["metrics_dir"] = str(args.output_dir / "segmentation_eval")
+    print_result_table([result])
+
+    args.limit_eval_images = original_limit
+
+
+def load_runtime(eomt_root: Path) -> SimpleNamespace:
+    if str(eomt_root) not in sys.path:
+        sys.path.insert(0, str(eomt_root))
+
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+    from PIL import Image
+
+    from datasets.cityscapes_semantic import CityscapesSemantic
+    from datasets.coco_panoptic import CLASS_MAPPING as COCO_CLASS_MAPPING
+    from models.eomt import EoMT
+    from models.vit import ViT
+
+    return SimpleNamespace(
+        np=np,
+        torch=torch,
+        F=F,
+        Image=Image,
+        CityscapesSemantic=CityscapesSemantic,
+        COCO_CLASS_MAPPING=COCO_CLASS_MAPPING,
+        EoMT=EoMT,
+        ViT=ViT,
+    )
+
+
+def load_torch_checkpoint(rt: SimpleNamespace, checkpoint: Path) -> dict:
+    try:
+        return rt.torch.load(checkpoint, map_location="cpu", weights_only=True)
+    except TypeError:
+        return rt.torch.load(checkpoint, map_location="cpu")
+    except Exception:
+        return rt.torch.load(checkpoint, map_location="cpu", weights_only=False)
+
+
+def normalize_state_dict(state_dict: dict) -> dict:
+    normalized = {}
+    skip_prefixes = ("criterion.", "metrics.")
+
+    for key, value in state_dict.items():
+        key = key.replace("._orig_mod", "")
+
+        for prefix in ["module.network.", "model.network.", "network."]:
+            if key.startswith(prefix):
+                key = key[len(prefix) :]
+                break
+
+        if key.startswith(skip_prefixes):
+            continue
+
+        normalized[key] = value
+
+    return normalized
+
+
+def resize_pos_embed_if_needed(rt: SimpleNamespace, state_dict: dict, network) -> None:
+    key = "encoder.backbone.pos_embed"
+    model_state = network.state_dict()
+
+    if key not in state_dict or key not in model_state:
+        return
+
+    src = state_dict[key]
+    dst = model_state[key]
+
+    if src.shape == dst.shape:
+        return
+
+    if src.ndim != 3 or dst.ndim != 3 or src.shape[0] != 1 or dst.shape[0] != 1:
+        print(f"Warning: cannot resize {key}: {tuple(src.shape)} -> {tuple(dst.shape)}")
+        return
+
+    if src.shape[2] != dst.shape[2]:
+        print(f"Warning: cannot resize {key}: {tuple(src.shape)} -> {tuple(dst.shape)}")
+        return
+
+    src_grid = int(math.sqrt(src.shape[1]))
+    dst_grid = int(math.sqrt(dst.shape[1]))
+
+    if src_grid * src_grid != src.shape[1] or dst_grid * dst_grid != dst.shape[1]:
+        print(f"Warning: cannot resize non-square {key}: {tuple(src.shape)} -> {tuple(dst.shape)}")
+        return
+
+    pos_embed = src.reshape(1, src_grid, src_grid, src.shape[2]).permute(0, 3, 1, 2)
+    pos_embed = rt.F.interpolate(
+        pos_embed,
+        size=(dst_grid, dst_grid),
+        mode="bicubic",
+        align_corners=False,
+    )
+    state_dict[key] = pos_embed.permute(0, 2, 3, 1).reshape(1, dst.shape[1], dst.shape[2])
+    print(f"Resized {key}: {src_grid}x{src_grid} -> {dst_grid}x{dst_grid}")
+
+
+def load_network(
+    rt: SimpleNamespace,
+    checkpoint: Path,
+    model_preset: str,
+    img_size: tuple[int, int],
+    device,
+    num_q: int | None,
+):
+    if model_preset == "cityscapes-semantic":
+        num_classes = 19
+        default_num_q = 100
+    elif model_preset == "coco-panoptic":
+        num_classes = 133
+        default_num_q = 200
+    else:
+        raise ValueError(f"Unknown model preset: {model_preset}")
+
+    if num_q is None:
+        num_q = default_num_q
+
+    encoder = rt.ViT(
+        img_size=img_size,
+        backbone_name="vit_base_patch14_reg4_dinov2",
+        ckpt_path=str(checkpoint),
+    )
+    network = rt.EoMT(
+        encoder=encoder,
+        num_classes=num_classes,
+        num_q=num_q,
+        num_blocks=3,
+        masked_attn_enabled=True,
+    )
+
+    checkpoint_data = load_torch_checkpoint(rt, checkpoint)
+    state_dict = checkpoint_data.get("state_dict", checkpoint_data)
+    state_dict = normalize_state_dict(state_dict)
+    resize_pos_embed_if_needed(rt, state_dict, network)
+
+    incompatible = network.load_state_dict(state_dict, strict=False)
+    serious_missing = [
+        key for key in incompatible.missing_keys if not key.startswith("attn_mask_probs")
+    ]
+
+    if serious_missing or incompatible.unexpected_keys:
+        print("Warning: checkpoint did not load perfectly.")
+        if serious_missing:
+            print(f"  Missing keys: {serious_missing[:20]}")
+        if incompatible.unexpected_keys:
+            print(f"  Unexpected keys: {incompatible.unexpected_keys[:20]}")
+
+    network.to(device)
+    network.eval()
+    return network
+
+
+def scale_img_size(old_size: tuple[int, int], img_size: tuple[int, int]) -> list[int]:
+    factor = max(img_size[0] / old_size[0], img_size[1] / old_size[1])
+    return [round(side * factor) for side in old_size]
+
+
+def make_windows(rt: SimpleNamespace, imgs, img_size: tuple[int, int], device):
+    crops = []
+    origins = []
+    original_sizes = []
+    crop_size = min(img_size)
+
+    for img_index, img in enumerate(imgs):
+        original_sizes.append(tuple(img.shape[-2:]))
+        new_h, new_w = scale_img_size(tuple(img.shape[-2:]), img_size)
+
+        pil_img = rt.Image.fromarray(img.permute(1, 2, 0).cpu().numpy())
+        resized_img = pil_img.resize((new_w, new_h), rt.Image.BILINEAR)
+        resized_img = rt.torch.from_numpy(rt.np.array(resized_img)).permute(2, 0, 1)
+
+        long_side = max(resized_img.shape[-2:])
+        num_crops = int(math.ceil(long_side / crop_size))
+        overlap = num_crops * crop_size - long_side
+        overlap_per_crop = overlap / (num_crops - 1) if num_crops > 1 else 0
+
+        for crop_index in range(num_crops):
+            start = int(crop_index * (crop_size - overlap_per_crop))
+            end = start + crop_size
+
+            if resized_img.shape[-2] > resized_img.shape[-1]:
+                crop = resized_img[:, start:end, :]
+            else:
+                crop = resized_img[:, :, start:end]
+
+            crops.append(crop)
+            origins.append((img_index, start, end))
+
+    return rt.torch.stack(crops).to(device), origins, original_sizes
+
+
+def merge_window_scores(rt: SimpleNamespace, crop_scores, origins, original_sizes, img_size):
+    score_sums = []
+    score_counts = []
+
+    for size in original_sizes:
+        h, w = scale_img_size(size, img_size)
+        score_sums.append(rt.torch.zeros((crop_scores.shape[1], h, w), device=crop_scores.device))
+        score_counts.append(rt.torch.zeros((crop_scores.shape[1], h, w), device=crop_scores.device))
+
+    for crop_index, (img_index, start, end) in enumerate(origins):
+        if original_sizes[img_index][0] > original_sizes[img_index][1]:
+            score_sums[img_index][:, start:end, :] += crop_scores[crop_index]
+            score_counts[img_index][:, start:end, :] += 1
+        else:
+            score_sums[img_index][:, :, start:end] += crop_scores[crop_index]
+            score_counts[img_index][:, :, start:end] += 1
+
+    merged_scores = []
+    for img_index, scores in enumerate(score_sums):
+        counts = score_counts[img_index].clamp_min(1)
+        merged = rt.F.interpolate(
+            (scores / counts)[None, ...],
+            original_sizes[img_index],
+            mode="bilinear",
+            align_corners=False,
+        )[0]
+        merged_scores.append(merged)
+
+    return merged_scores
+
+
+def query_logits_to_pixel_scores(rt: SimpleNamespace, mask_logits, class_logits):
+    return rt.torch.einsum(
+        "bqhw,bqc->bchw",
+        mask_logits.sigmoid(),
+        class_logits.softmax(dim=-1)[..., :-1],
+    )
+
+
+def targets_to_pixels(rt: SimpleNamespace, targets, ignore_index: int = 255):
+    pixel_targets = []
+
+    for target in targets:
+        pixel_target = rt.torch.full(
+            target["masks"].shape[-2:],
+            ignore_index,
+            dtype=rt.torch.long,
+            device=target["masks"].device,
+        )
+
+        for mask, label in zip(target["masks"], target["labels"]):
+            pixel_target[mask] = label.long()
+
+        pixel_targets.append(pixel_target)
+
+    return pixel_targets
+
+
+def coco_contiguous_to_cityscapes(rt: SimpleNamespace) -> dict[int, int]:
+    mapping = {}
+
+    for coco_id, cityscapes_train_id in COCO_TO_CITYSCAPES.items():
+        if coco_id in rt.COCO_CLASS_MAPPING:
+            mapping[rt.COCO_CLASS_MAPPING[coco_id]] = cityscapes_train_id
+
+    return mapping
+
+
+def prediction_to_cityscapes(rt: SimpleNamespace, scores, model_preset: str):
+    source_prediction = scores.argmax(dim=0)
+
+    if model_preset == "cityscapes-semantic":
+        return source_prediction.long()
+
+    mapping = coco_contiguous_to_cityscapes(rt)
+    void_prediction_index = 19
+    mapped_prediction = rt.torch.full_like(source_prediction, void_prediction_index)
+
+    for source_id, target_id in mapping.items():
+        mapped_prediction[source_prediction == source_id] = target_id
+
+    return mapped_prediction.long()
+
+
+def update_confusion_matrix(rt: SimpleNamespace, confusion, pred, target) -> None:
+    num_classes = 19
+    pred_classes = num_classes + 1
+    ignore_index = 255
+
+    valid = target != ignore_index
+    target_valid = target[valid].long().cpu()
+    pred_valid = pred[valid].long().cpu()
+    pred_valid[(pred_valid < 0) | (pred_valid >= num_classes)] = num_classes
+
+    encoded = target_valid * pred_classes + pred_valid
+    counts = rt.torch.bincount(encoded, minlength=num_classes * pred_classes)
+    confusion += counts.reshape(num_classes, pred_classes)
+
+
+def compute_iou(rt: SimpleNamespace, confusion) -> tuple[list[float], float]:
+    confusion = confusion.double()
+    true_positive = confusion[:, :19].diag()
+    false_positive = confusion[:, :19].sum(dim=0) - true_positive
+    false_negative = confusion.sum(dim=1) - true_positive
+    denominator = true_positive + false_positive + false_negative
+
+    iou = rt.torch.where(
+        denominator > 0,
+        true_positive / denominator,
+        rt.torch.full_like(denominator, float("nan")),
+    )
+
+    per_class_iou = [float(value) for value in iou.cpu().tolist()]
+    miou = float(rt.torch.nanmean(iou).item())
+    return per_class_iou, miou
+
+
+def save_sample_prediction(rt: SimpleNamespace, sample_dir: Path, index: int, img, pred, target) -> None:
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    palette = rt.np.array(CITYSCAPES_PALETTE, dtype=rt.np.uint8)
+
+    image = rt.Image.fromarray(img.permute(1, 2, 0).cpu().numpy().astype(rt.np.uint8))
+    pred_mask = pred.cpu().numpy()
+    target_mask = target.cpu().numpy()
+
+    pred_mask[(pred_mask < 0) | (pred_mask > 18)] = 19
+    target_mask[(target_mask < 0) | (target_mask > 18)] = 19
+
+    image.save(sample_dir / f"{index:04d}_image.png")
+    rt.Image.fromarray(palette[pred_mask.astype(rt.np.int64)]).save(sample_dir / f"{index:04d}_pred.png")
+    rt.Image.fromarray(palette[target_mask.astype(rt.np.int64)]).save(sample_dir / f"{index:04d}_target.png")
+
+
+def write_or_update_summary(summary_path: Path, row: dict) -> None:
+    fieldnames = [
+        "checkpoint_name",
+        "model_preset",
+        "class_mapping",
+        "img_size",
+        "num_images",
+        "mIoU",
+        "elapsed_sec",
+    ]
+
+    rows = []
+    if summary_path.exists():
+        with summary_path.open(newline="", encoding="utf-8") as f:
+            for old_row in csv.DictReader(f):
+                if old_row.get("checkpoint_name") != row["checkpoint_name"]:
+                    rows.append(old_row)
+
+    rows.append(row)
+
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with summary_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for output_row in rows:
+            writer.writerow({key: output_row.get(key, "") for key in fieldnames})
+
+
+def write_metric_files(
+    rt: SimpleNamespace,
+    metrics_dir: Path,
+    checkpoint_name: str,
+    model_preset: str,
+    img_size: tuple[int, int],
+    confusion,
+    num_images: int,
+    elapsed_sec: float,
+) -> dict:
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    per_class_iou, miou = compute_iou(rt, confusion)
+
+    if model_preset == "cityscapes-semantic":
+        class_mapping = "direct_cityscapes19"
+    else:
+        class_mapping = "coco133_to_cityscapes19"
+
+    metrics = {
+        "checkpoint_name": checkpoint_name,
+        "model_preset": model_preset,
+        "class_mapping": class_mapping,
+        "img_size": f"{img_size[0]}x{img_size[1]}",
+        "num_images": num_images,
+        "mIoU": miou,
+        "elapsed_sec": elapsed_sec,
+        "per_class_iou": {},
+        "confusion_matrix_rows_target_cols_pred_plus_void": confusion.tolist(),
+    }
+
+    for class_name, iou in zip(CITYSCAPES_CLASSES, per_class_iou):
+        if math.isnan(iou):
+            metrics["per_class_iou"][class_name] = None
+        else:
+            metrics["per_class_iou"][class_name] = iou
+
+    json_path = metrics_dir / f"{checkpoint_name}_cityscapes_semantic_metrics.json"
+    class_csv_path = metrics_dir / f"{checkpoint_name}_cityscapes_semantic_per_class_iou.csv"
+    summary_path = metrics_dir / "cityscapes_semantic_summary.csv"
+
+    json_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    with class_csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["class_id", "class_name", "iou"])
+        writer.writeheader()
+        for class_id, class_name in enumerate(CITYSCAPES_CLASSES):
+            iou = per_class_iou[class_id]
+            writer.writerow(
+                {
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "iou": "" if math.isnan(iou) else f"{iou:.8f}",
+                }
+            )
+
+    write_or_update_summary(
+        summary_path,
+        {
+            "checkpoint_name": checkpoint_name,
+            "model_preset": model_preset,
+            "class_mapping": class_mapping,
+            "img_size": metrics["img_size"],
+            "num_images": str(num_images),
+            "mIoU": f"{miou:.8f}",
+            "elapsed_sec": f"{elapsed_sec:.2f}",
+        },
+    )
+
+    print(f"Wrote {json_path}")
+    print(f"Wrote {class_csv_path}")
+    print(f"Updated {summary_path}")
+    print(f"mIoU: {miou * 100:.2f}")
+
+    return metrics
+
+
+def evaluate_checkpoint_in_process(
+    checkpoint: Path,
+    checkpoint_name: str,
+    model_preset: str,
+    args: argparse.Namespace,
+    num_q: int | None = None,
+) -> dict:
+    print("\n" + "=" * 80)
+    print(f"Evaluating: {checkpoint_name}")
+    print(f"Checkpoint: {checkpoint}")
+    print("=" * 80)
+
+    rt = load_runtime(args.eomt_root)
+    device = rt.torch.device(args.device)
+
+    if device.type == "cuda" and not rt.torch.cuda.is_available():
+        print("CUDA was requested but is not available. Falling back to CPU.")
+        device = rt.torch.device("cpu")
+
+    img_size = (args.img_size, args.img_size)
+    metrics_dir = args.output_dir / "segmentation_eval"
+    sample_dir = metrics_dir / f"{checkpoint_name}_samples"
+
+    data = rt.CityscapesSemantic(
+        path=args.data_path,
+        batch_size=args.eval_batch_size,
+        num_workers=args.num_workers,
+        img_size=img_size,
+        check_empty_targets=False,
+    )
+    data.setup("validate")
+    loader = data.val_dataloader()
+
+    network = load_network(
+        rt=rt,
+        checkpoint=checkpoint,
+        model_preset=model_preset,
+        img_size=img_size,
+        device=device,
+        num_q=num_q,
+    )
+
+    confusion = rt.torch.zeros((19, 20), dtype=rt.torch.long)
+    num_images = 0
+    saved_samples = 0
+    started = time.time()
+
+    use_amp = not args.no_amp and device.type == "cuda"
+    amp_dtype = rt.torch.float16
+    if args.amp_dtype == "bf16":
+        amp_dtype = rt.torch.bfloat16
+
+    with rt.torch.inference_mode():
+        for batch_index, (imgs, targets) in enumerate(loader):
+            crops, origins, original_sizes = make_windows(rt, imgs, img_size, device)
+
+            with rt.torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                mask_logits_per_layer, class_logits_per_layer = network(crops.float() / 255.0)
+                mask_logits = rt.F.interpolate(
+                    mask_logits_per_layer[-1],
+                    img_size,
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                crop_scores = query_logits_to_pixel_scores(
+                    rt,
+                    mask_logits,
+                    class_logits_per_layer[-1],
+                )
+
+            full_scores = merge_window_scores(
+                rt,
+                crop_scores.float(),
+                origins,
+                original_sizes,
+                img_size,
+            )
+            full_targets = targets_to_pixels(rt, targets)
+
+            for img, scores, target in zip(imgs, full_scores, full_targets):
+                pred = prediction_to_cityscapes(rt, scores, model_preset)
+                update_confusion_matrix(rt, confusion, pred, target)
+
+                if saved_samples < args.save_samples:
+                    save_sample_prediction(rt, sample_dir, saved_samples, img, pred, target)
+                    saved_samples += 1
+
+                num_images += 1
+
+            if (batch_index + 1) % args.log_every == 0:
+                _, running_miou = compute_iou(rt, confusion)
+                print(
+                    f"Processed {num_images}/{len(loader.dataset)} images, "
+                    f"running mIoU={running_miou * 100:.2f}"
+                )
+
+            if args.limit_eval_images and num_images >= args.limit_eval_images:
+                break
+
+    return write_metric_files(
+        rt=rt,
+        metrics_dir=metrics_dir,
+        checkpoint_name=checkpoint_name,
+        model_preset=model_preset,
+        img_size=img_size,
+        confusion=confusion,
+        num_images=num_images,
+        elapsed_sec=time.time() - started,
+    )
+
+
+def evaluate_checkpoint(
+    checkpoint: Path,
+    checkpoint_name: str,
+    model_preset: str,
+    args: argparse.Namespace,
+    num_q: int | None = None,
+) -> dict:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--mode",
+        "evaluate",
+        "--eomt-root",
+        str(args.eomt_root),
+        "--data-path",
+        str(args.data_path),
+        "--output-dir",
+        str(args.output_dir),
+        "--eval-checkpoint",
+        str(checkpoint),
+        "--eval-checkpoint-name",
+        checkpoint_name,
+        "--eval-model-preset",
+        model_preset,
+        "--eval-batch-size",
+        str(args.eval_batch_size),
+        "--num-workers",
+        str(args.num_workers),
+        "--img-size",
+        str(args.img_size),
+        "--device",
+        args.device,
+        "--amp-dtype",
+        args.amp_dtype,
+        "--save-samples",
+        str(args.save_samples),
+        "--log-every",
+        str(args.log_every),
+    ]
+
+    if args.no_amp:
+        command.append("--no-amp")
+    if args.limit_eval_images:
+        command.extend(["--limit-eval-images", str(args.limit_eval_images)])
+    if num_q is not None:
+        command.extend(["--eval-num-q", str(num_q)])
+
+    run_command(command, cwd=ROOT)
+
+    metrics_path = (
+        args.output_dir
+        / "segmentation_eval"
+        / f"{checkpoint_name}_cityscapes_semantic_metrics.json"
+    )
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Evaluation metrics were not written: {metrics_path}")
+    return json.loads(metrics_path.read_text(encoding="utf-8"))
+
+
+def print_result_table(results: list[dict]) -> None:
+    if not results:
+        return
+
+    print("\nStep 5 Cityscapes validation results")
+    print("-" * 86)
+    print(f"{'checkpoint_name':42} {'mapping':26} {'images':>6} {'mIoU':>8}")
+    print("-" * 86)
+
+    for row in results:
+        print(
+            f"{row['checkpoint_name'][:42]:42} "
+            f"{row['class_mapping'][:26]:26} "
+            f"{row['num_images']:>6} "
+            f"{row['mIoU'] * 100:>7.2f}%"
+        )
+
+    print("-" * 86)
+    print(f"Metrics folder: {results[0].get('metrics_dir', 'see output above')}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+
+    parser.add_argument(
+        "--mode",
+        choices=["smoke", "all", "baselines", "finetune", "evaluate"],
+        default="smoke",
+    )
+    parser.add_argument("--experiment", choices=["head", "last-block", "both"], default="last-block")
+
+    parser.add_argument("--eomt-root", type=Path, default=EOMT_ROOT)
+    parser.add_argument("--data-path", type=Path, default=ROOT)
+    parser.add_argument("--coco-checkpoint", type=Path, default=COCO_CHECKPOINT)
+    parser.add_argument("--cityscapes-checkpoint", type=Path, default=CITYSCAPES_CHECKPOINT)
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "step5_results")
+
+    parser.add_argument("--epochs", type=int, default=0, help="0 uses 8 epochs for head and 12 for last-block.")
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--eval-batch-size", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--img-size", type=int, default=640)
+
+    parser.add_argument("--precision", default="16-mixed")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--no-amp", action="store_true", help="Disable CUDA autocast during evaluation.")
+    parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="fp16")
+
+    parser.add_argument("--install-requirements", action="store_true")
+    parser.add_argument("--limit-eval-images", type=int, default=0)
+    parser.add_argument("--save-samples", type=int, default=0)
+    parser.add_argument("--log-every", type=int, default=25)
+
+    parser.add_argument("--eval-checkpoint", type=Path, default=None)
+    parser.add_argument("--eval-checkpoint-name", default=None)
+    parser.add_argument(
+        "--eval-model-preset",
+        choices=["cityscapes-semantic", "coco-panoptic"],
+        default=None,
+    )
+    parser.add_argument("--eval-num-q", type=int, default=None)
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    args.eomt_root = args.eomt_root.resolve()
+    args.data_path = args.data_path.resolve()
+    args.coco_checkpoint = args.coco_checkpoint.resolve()
+    args.cityscapes_checkpoint = args.cityscapes_checkpoint.resolve()
+    if args.eval_checkpoint is not None:
+        args.eval_checkpoint = args.eval_checkpoint.resolve()
+    args.output_dir = args.output_dir.resolve()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    check_input_files(args)
+
+    if args.install_requirements:
+        run_command(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=args.eomt_root,
+        )
+
+    if args.mode == "evaluate":
+        if args.eval_checkpoint is None:
+            raise ValueError("--eval-checkpoint is required with --mode evaluate")
+        if args.eval_checkpoint_name is None:
+            raise ValueError("--eval-checkpoint-name is required with --mode evaluate")
+        if args.eval_model_preset is None:
+            raise ValueError("--eval-model-preset is required with --mode evaluate")
+        evaluate_checkpoint_in_process(
+            checkpoint=args.eval_checkpoint,
+            checkpoint_name=args.eval_checkpoint_name,
+            model_preset=args.eval_model_preset,
+            args=args,
+            num_q=args.eval_num_q,
+        )
+        return
+
+    if args.mode == "smoke":
+        run_smoke_mode(args)
+        return
+
+    results = []
+
+    if args.mode in ["all", "baselines"]:
+        results.append(
+            evaluate_checkpoint(
+                checkpoint=args.cityscapes_checkpoint,
+                checkpoint_name="provided_eomt_cityscapes_640",
+                model_preset="cityscapes-semantic",
+                args=args,
+            )
+        )
+        results.append(
+            evaluate_checkpoint(
+                checkpoint=args.coco_checkpoint,
+                checkpoint_name="provided_eomt_coco_mapped_640",
+                model_preset="coco-panoptic",
+                args=args,
+            )
+        )
+
+    if args.mode in ["all", "finetune"]:
+        for experiment in selected_experiments(args.experiment):
+            checkpoint = train_one_experiment(experiment, args)
+            results.append(
+                evaluate_checkpoint(
+                    checkpoint=checkpoint,
+                    checkpoint_name=get_checkpoint_name(experiment),
+                    model_preset="cityscapes-semantic",
+                    args=args,
+                    num_q=200,
+                )
+            )
+
+    for result in results:
+        result["metrics_dir"] = str(args.output_dir / "segmentation_eval")
+
+    print_result_table(results)
+
+
+if __name__ == "__main__":
+    main()
