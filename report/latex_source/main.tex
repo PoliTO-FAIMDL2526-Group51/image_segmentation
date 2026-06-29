@@ -13,6 +13,7 @@
 \definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
 \usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
 \usepackage{multirow}
+\usepackage{xcolor}
 
 %%%%%%%%% PAPER ID - PLEASE UPDATE
 \def\paperID{*****}
@@ -42,22 +43,22 @@ s336472
 
 
 \begin{abstract}
-Safe autonomous driving requires efficient anomaly detection and semantic segmentation. In our work, we investigate the potential of the EoMT (Every Object is a Mask Token) framework in relation to its cross-domain and fine-tuning properties. Specifically, we evaluate the transferability of an EoMT pre-trained on the COCO panoptic segmentation task on the Cityscapes validation set. To overcome possible domain discrepancy, we propose two fine-tuning strategies, namely head-only and last-block fine-tuning. Moreover, we investigate how well EoMT models can perform out-of-distribution (OOD) anomaly detection using multiple post-hoc uncertainty estimates based on maximum logit, max entropy, and region-based aggregation (RbA). In comparison with a generic pixel-based architecture like ERFNet, we show that the usage of the EoMT framework along with the max entropy score is extremely encouraging to detect dangerous anomalies. Our code is available: \url{https://github.com/PoliTO-FAIMDL2526-Group51/image_segmentation}.
+Safe autonomous driving requires efficient anomaly detection and semantic segmentation. In our work, we investigate the potential of the \textcolor{blue}{Encoder-only Mask Transformer (EoMT)} framework in relation to its cross-domain and fine-tuning properties. Specifically, we evaluate the transferability of an EoMT pre-trained on the \textcolor{blue}{Common Objects in Context (COCO)} panoptic segmentation task on the Cityscapes validation set. To overcome possible domain discrepancy, we propose two fine-tuning strategies, namely head-only and last-block fine-tuning. Moreover, we investigate how well EoMT models can perform out-of-distribution (OOD) anomaly detection using multiple post-hoc uncertainty estimates based on maximum logit, max entropy, and \textcolor{blue}{Rejected by All (RbA)}. In comparison with a generic pixel-based architecture like \textcolor{blue}{Efficient Residual Factorized ConvNet (ERFNet)}, we show that the usage of the EoMT framework along with the max entropy score is extremely encouraging to detect dangerous anomalies. Our code is available: \url{https://github.com/PoliTO-FAIMDL2526-Group51/image_segmentation}.
 \end{abstract}
 
 
 
 \section{Introduction}
 
-Autonomous driving needs reliable road-scene understanding, and segmentation is one of the main tools for this because it assigns labels to image regions at pixel level. At the beginning of the project, we reviewed several segmentation tasks and models. ERFNet~\cite{romera2017erfnet} was used as an example of an efficient semantic segmentation model for real-time applications, while Panoptic Segmentation~\cite{kirillov2019panoptic} introduced the idea of combining semantic labels with instance-level information. We then studied mask-based methods, starting from MaskFormer~\cite{cheng2021maskformer} and Mask2Former~\cite{cheng2022mask2former}, which treat segmentation more as a mask classification problem. DINOv2~\cite{oquab2023dinov2} and EoMT~\cite{eomt2025} were also relevant because they show how strong ViT features can be used for segmentation. Based on this background, Step 4 compares two pretrained EoMT models: one trained on Cityscapes for semantic segmentation and one trained on COCO for panoptic segmentation. Since their tasks and label spaces are different, we mapped their predictions to a common semantic label space and evaluated them on the Cityscapes validation set using mIoU. In step 5 we have analyzed how well can COCO EoMT model perform when fine-tuned with Cityscapes. We used two different lightweight approaches, head-only and last-block fine-tuning.
+Autonomous driving needs reliable road-scene understanding, and segmentation is one of the main tools for this because it assigns labels to image regions at pixel level. At the beginning of the project, we reviewed several segmentation tasks and models. ERFNet~\cite{romera2017erfnet} was used as an example of an efficient semantic segmentation model for real-time applications, while Panoptic Segmentation~\cite{kirillov2019panoptic} introduced the idea of combining semantic labels with instance-level information. We then studied mask-based methods, starting from MaskFormer~\cite{cheng2021per} and Mask2Former~\cite{cheng2022masked}, which treat segmentation more as a mask classification problem. \mbox{DINOv2}~\cite{oquab2023dinov2} and EoMT~\cite{kerssies2025your} were also relevant because they show how strong \textcolor{blue}{Vision Transformer (ViT)} features can be used for segmentation. Based on this background, Step 4 compares two pretrained EoMT models: one trained on Cityscapes for semantic segmentation and one trained on COCO for panoptic segmentation. Since their tasks and label spaces are different, we mapped their predictions to a common semantic label space and evaluated them on the Cityscapes validation set using \textcolor{blue}{mean Intersection over Union (mIoU)}. In step 5 we have analyzed how well the COCO EoMT model can perform when fine-tuned with Cityscapes. We used two different lightweight approaches, head-only and last-block fine-tuning.
 Before evaluating the mask-based architecture, we ran the dataset through the traditional network to measure the pixel baselines, and compare the improvement in performance.
-Finally, we evaluate the mask-based EoMT checkpoints for anomaly segmentation in open-world road scenes. We apply MSP, MaxLogit, MaxEntropy, and the mask-specific RbA score to detect pixels outside the known road-scene distribution. We also study how checkpoint training and temperature scaling affect anomaly detection across five benchmark datasets.
+Finally, we evaluate the mask-based EoMT checkpoints for anomaly segmentation in open-world road scenes. We apply \textcolor{blue}{Maximum Softmax Probability (MSP)}, MaxLogit, MaxEntropy, and the mask-specific RbA~\cite{nayal2023rba} to detect pixels outside the known road-scene distribution. We also study how checkpoint training and temperature scaling affect anomaly detection across five benchmark datasets.
 
 
 \section{Methodology}
 
 
-As required in step 4, we compares the two provided EoMT checkpoints on the Cityscapes validation set. The two models are:
+As required in step 4, we compare the two provided EoMT checkpoints on the Cityscapes validation set. The two models are:
 
 \begin{itemize}
     \item \texttt{eomt\_cityscapes.bin}, trained on Cityscapes for semantic segmentation.
@@ -82,7 +83,7 @@ Since the two models are trained on different datasets and tasks, their output c
 
 For the Cityscapes model, the output is already a semantic segmentation prediction, so the Cityscapes train IDs are mapped to the common classes. For the COCO model, the panoptic output is first converted into semantic class labels, and then the COCO labels are mapped into the same common class space.
 
-The final metric is mean Intersection over Union (mIoU), computed on the full Cityscapes validation set. \cref{fig:step4_comparison} is a example.
+The final metric is mean Intersection over Union (mIoU), computed on the full Cityscapes validation set. \cref{fig:step4_comparison} is an example.
 
 \begin{figure}[h]
     \centering
@@ -108,7 +109,7 @@ To detect anomalies, three post-hoc methods were used, as ERFNet is just a seman
     \item \texttt{MaxEntropy}, taking into account the high entropy score of the softmax distribution.
 \end{itemize}
 
-Two performance metrics were used for each method across the different datasets, keeping the same preprocessing and evaluation pipeline: AuPRC, Area under the Precision-Recall Curve, and FPR95, False Positive Rate at 95\% True Positive Rate.
+Two performance metrics were used for each method across the different datasets, keeping the same preprocessing and evaluation pipeline:  \textcolor{blue}{area under the Precision-Recall Curve (AuPRC)}, and  \textcolor{blue}{false positive rate at 95\% true positive rate (FPR95)}.
 
 \paragraph{Mask-Based Anomaly}EoMT predicts $Q$ query masks $M_q$ and query-level class logits $\mathbf{z}_q$.
 They are aggregated into the per-pixel semantic score
@@ -117,21 +118,20 @@ S_c(i)=\sum_{q=1}^{Q}
     \text{softmax}(\mathbf{z}_q)_c\,\sigma(M_q(i)),
 \label{eq:aggregation}
 \end{equation}
-excluding the no-object class. From $\mathbf{p}(i)=\softmax(\mathbf{S}(i))$, we
+excluding the no-object class. From $\mathbf{p}(i)=\text{softmax}(\mathbf{S}(i))$, we
 compute MSP, MaxLogit, and normalized MaxEntropy using the same definitions as the
 pixel baseline. The mask-specific score is
 \begin{equation}
     A_{\mathrm{RbA}}(i)=-\sum_c\tanh(S_c(i)).
-\label{eq:aggregation}
+\label{eq:rba}
 \end{equation}
 Temperature scaling replaces
-$\softmax(\mathbf{z}_q)$ in \cref{eq:aggregation} with
-$\softmax(\mathbf{z}_q/T)$ for
+$\text{softmax}(\mathbf{z}_q)$ in \cref{eq:aggregation} with
+$\text{softmax}(\mathbf{z}_q/T)$ for
 $T\in\{0.25,0.5,0.75,1,1.5,2,2.5\}$.
 
 We evaluate EoMT trained on COCO and Cityscapes, plus the Step 5 head-only and
-last-block fine-tuned checkpoints. All four scores are evaluated on SMIYC RA-21,
-SMIYC RO-21, FS Lost \& Found, FS Static, and Road Anomaly.
+last-block fine-tuned checkpoints. All four scores are evaluated on \textcolor{blue}{\mbox{SegmentMeIfYouCan} (SMIYC), RoadAnomaly21 (RA-21), RoadObstacle21 (RO-21), FishyScapes (FS) Lost \& Found, FS Static, and Road Anomaly}.
 Results use AuPRC (higher is better) and FPR95 (lower is better).
 
 \section{Experimental Results}
@@ -194,15 +194,15 @@ Model & Method & mIoU & Road Anomaly & SMIYC RA-21 & SMIYC RO-21 & FS Static & F
     & RbA && 51.0/83.8 & 56.5/96.9 & 54.5/93.0 & 69.9/79.0 & 37.5/89.8 \\
 \midrule
 \multirow{4}{*}{EoMT FT-LastBlock}
-    & MSP & 0.81 & 62.1/24.9  & 94.2/0.3 & 35.3/19.1 & 86.0/4.7 & 67.1/40.0 \\
-    & MaxLogit && 61.5/24.3  & 94.2/0.3 & 35.6/17.9 & 86.0/4.5 & 64.7/81.2 \\
-    & MaxEntropy && 63.1/23.8  & \textbf{94.5/0.3} & 37.2/17.4 & \textbf{86.3}/3.9 & 65.2/81.4 \\
-    & RbA && 58.9/19.0  & 92.2/0.4 & 36.5/78.6 & 84.4/\textbf{3.8} & 49.1/98.4 \\
+    & MSP & 0.81 & 62.1/24.9  & 67.1/40.0 & 94.2/0.3 & 86.0/4.7 & 35.3/19.1 \\
+    & MaxLogit && 61.5/24.3  & 64.7/81.2 & 94.2/0.3 & 86.0/4.5 & 35.6/17.9 \\
+    & MaxEntropy && 63.1/23.8  & 65.2/81.4 & \textbf{94.5/0.3} & \textbf{86.3}/3.9 & 37.2/17.4 \\
+    & RbA && 58.9/19.0  & 49.1/98.4 & 92.2/0.4 & 84.4/\textbf{3.8} & 36.5/78.6 \\
 \bottomrule
 \end{tabular}}
 \end{table*}
 
-The raw COCO checkpoint is consistently the weakest anomaly detector because its broad known-class vocabulary includes many objects considered anomalous in road scenes. Adapting the model to Cityscapes greatly improves anomaly detection, but there is no universally best fine-tuning depth: FT-Head, FT-LastBlock, and the Cityscapes checkpoint each perform best on different datasets. Among the post-hoc scores, MaxEntropy is the most reliable default, whereas RbA is substantially less stable across datasets and operating points. Temperature scaling can improve ranking, but its effect depends on the checkpoint, dataset, score, and target metric.
+The raw COCO checkpoint is consistently the weakest anomaly detector because its broad known-class vocabulary includes many objects considered anomalous in road scenes. Adapting the model to Cityscapes greatly improves anomaly detection, but there is no universally best fine-tuning depth: \textcolor{blue}{the head-only fine-tuned model (FT-Head)}, \textcolor{blue}{the last-block fine-tuned model (FT-LastBlock)}, and the Cityscapes checkpoint each perform best on different datasets. Among the post-hoc scores, MaxEntropy is the most reliable default, whereas RbA is substantially less stable across datasets and operating points. Temperature scaling can improve ranking, but its effect depends on the checkpoint, dataset, score, and target metric.
 
 \subsection{Quantitative Breakdown}
 
@@ -210,7 +210,7 @@ The raw COCO checkpoint is consistently the weakest anomaly detector because its
     \centering
     \caption{Per-class IoU comparison after mapping both models to the common evaluation label space.}
     \label{tab:step4_per_class}
-    \begin{tabular}{lrr}
+    \begin{tabular}{lcc}
         \hline
         Class & Cityscapes EoMT & COCO EoMT \\
         \hline
@@ -245,7 +245,7 @@ At $T=1$, MaxEntropy with FT-Head obtains the highest AuPRC on RA-21 and Lost \&
 \scriptsize
 \begin{tabular}{llccc}
 \toprule
-Checkpoint & Dataset & $T{=}1$ AP & Best $T$ & Best AP \\
+Checkpoint & Dataset & $T{=}1$ \textcolor{blue}{AuPRC} & Best $T$ & Best \textcolor{blue}{AuPRC} \\
 \midrule
  & SMIYC RA-21 & 68.5 & 2.5 & \textbf{71.8} \\
  & SMIYC RO-21 & 93.6 & 0.5 & \textbf{94.0} \\
@@ -280,7 +280,8 @@ Checkpoint & Dataset & $T{=}1$ AP & Best $T$ & Best AP \\
 Selecting temperature by AuPRC does not necessarily improve FPR95. FT-Head RA-21 improves from 73.4 to 80.1 AuPRC at $T=0.25$, but its FPR95 rises from 27.7 to 99.2. Similarly, FT-LastBlock Lost \& Found improves from 37.2 to 40.5 AuPRC while FPR95 worsens from 17.4 to 50.5. Per-dataset best temperatures are therefore oracle analyses rather than deployable calibration choices.
 
 \section{Discussion}
-\subsection{Comparison of two model}
+% grammar fix: Comparison of two model
+\subsection{Comparison of the Two Models}
 For step4, the results are consistent with the training setup of the two models. The Cityscapes checkpoint was trained directly for semantic segmentation on road scenes, so it matches the validation set very well. This explains why it reaches an mIoU of 0.8582.
 
 The COCO checkpoint was trained for panoptic segmentation on COCO. COCO contains many different object categories, but it is not focused on driving scenes in the same way as Cityscapes. In addition, panoptic segmentation is not exactly the same as semantic segmentation. For this reason, the COCO panoptic output has to be converted into semantic labels before computing mIoU.
@@ -290,18 +291,24 @@ The qualitative images show the same trend. The Cityscapes model produces output
 The main limitation of this evaluation is the class mapping. A common label space is used to make the comparison possible, but the mapping between COCO and Cityscapes is still not perfect. Some Cityscapes classes are missing or defined differently in COCO.
 
 \subsection{Fine-tuning}
-
-For step 5 in the light of observed results our interpretation is that COCO baseline is low because COCO and Cityscapes have different structure such as label spaces and domains. The head-only fine-tuning approach substantially improved mIoU because EoMT already has great visual capabilities. It scores below the target model mainly it is not really trained first for Cityscapes. As our last experiment in this Last-block fine-tuning is giving us good signals, but it is not very dramatic compared to head-only tuning. 
-
-This can be caused by the resolution of images, limited epochs due to the need for more compute power, and COCO Cityscapes differences. Since our experimentation plays a role in exploring how close we can get by basic and cheap methods, further trials might have some more promising results.
-
-\subsection{Pixel-based baselines}
 \begin{figure*}[t]
     \centering
     \includegraphics[width=\textwidth]{qualitative.png}
     \caption{Qualitative anomaly-segmentation examples. Green contours denote ground truth, while heatmaps show per-image normalized anomaly scores for visualization only. The examples highlight successful localization and two complementary failure modes: confident anomaly acceptance and uncertainty on known-class boundaries.}
     \label{fig:qualitative}
 \end{figure*}
+
+For step 5 in the light of observed results our interpretation is that COCO baseline is low because COCO and Cityscapes have different structure such as label spaces and domains. The head-only fine-tuning approach substantially improved mIoU because EoMT already has great visual capabilities. It scores below the target model mainly it is not really trained first for Cityscapes. As our last experiment in this Last-block fine-tuning is giving us good signals, but it is not very dramatic compared to head-only tuning. 
+
+This can be caused by the resolution of images, limited epochs due to the need for more compute power, and COCO Cityscapes differences. Since our experimentation plays a role in exploring how close we can get by basic and cheap methods, further trials might have more promising results.
+
+\subsection{Pixel-based baselines}
+% \begin{figure*}[t]
+%     \centering
+%     \includegraphics[width=\textwidth]{qualitative.png}
+%     \caption{Qualitative anomaly-segmentation examples. Green contours denote ground truth, while heatmaps show per-image normalized anomaly scores for visualization only. The examples highlight successful localization and two complementary failure modes: confident anomaly acceptance and uncertainty on known-class boundaries.}
+%     \label{fig:qualitative}
+% \end{figure*}
 
 For what concerns pixel-based baselines, the MaxLogit method consistently showed the best performances, as shown by table~\ref{tab:pixel-based baselines}, owing that to the preservation of the magnitude of the scores and to the absence of the exponentiality present in the Softmax, which leads to skewed confidence, and which is also the reason for the closeness of results between MaxEntropy and Maximum Softmax Probability.
 
@@ -331,38 +338,11 @@ In this project, we carried out a series of experiments on road-scene understand
     \item All group members are responsible for these declarations.
 \end{itemize}
 
+\section{Revision Notes}
+Following the initial submission, we carefully re-examined the original papers for two key terms used throughout this report. First, EoMT was defined incorrectly in the abstract. Upon reviewing Kerssies et al.~\cite{kerssies2025your}, we confirmed the correct expansion is "Encoder-only Mask Transformer", referring to the architecture's use of a ViT encoder without a separate decoder. Second, the original work by Nayal et al.~\cite{nayal2023rba} defines RbA as "Rejected by All", meaning a pixel is flagged as anomalous when it is rejected by all known classes. Both definitions have been corrected in the abstract accordingly. In addition, we have provided the full definitions of all acronyms at their first occurrence in the text.
+
 {\small
-\begin{thebibliography}{13}
-
-\bibitem{romera2017erfnet}
-E. Romera, J. M. Alvarez, L. M. Bergasa, and R. Arroyo,
-``ERFNet: Efficient Residual Factorized ConvNet for Real-Time Semantic Segmentation,''
-\emph{IEEE Transactions on Intelligent Transportation Systems}, 2017.
-
-\bibitem{kirillov2019panoptic}
-A. Kirillov, K. He, R. Girshick, C. Rother, and P. Dollár,
-``Panoptic Segmentation,''
-in \emph{CVPR}, 2019.
-
-\bibitem{cheng2021maskformer}
-B. Cheng, A. G. Schwing, and A. Kirillov,
-``Per-Pixel Classification is Not All You Need for Semantic Segmentation,''
-in \emph{NeurIPS}, 2021.
-
-\bibitem{cheng2022mask2former}
-B. Cheng, I. Misra, A. G. Schwing, A. Kirillov, and R. Girdhar,
-``Masked-attention Mask Transformer for Universal Image Segmentation,''
-in \emph{CVPR}, 2022.
-
-\bibitem{oquab2023dinov2}
-M. Oquab et al.,
-``DINOv2: Learning Robust Visual Features without Supervision,''
-\emph{arXiv preprint arXiv:2304.07193}, 2023.
-
-\bibitem{eomt2025}
-``Your ViT is Secretly an Image Segmentation Model,''
-in \emph{CVPR}, 2025.
-
-\end{thebibliography}
+  \bibliographystyle{ieeenat_fullname}
+  \bibliography{refs}
 }
 \end{document}
